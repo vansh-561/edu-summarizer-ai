@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class EduSummarizeApp:
     """Main application class for EduSummarizeAI."""
     
-    def __init__(self):
+    def _init_(self):
         """Initialize the application."""
         # Set page config
         st.set_page_config(
@@ -60,6 +60,7 @@ class EduSummarizeApp:
             st.session_state.summarizer = None
             st.session_state.interactive_learning = None
             st.session_state.worksheet_generator = None
+            st.session_state.processed_files = {}  # Track processed files
         
         # Initialize components if API key is available
         if st.session_state.api_key and not st.session_state.initialized:
@@ -141,17 +142,82 @@ class EduSummarizeApp:
             uploaded_file = st.file_uploader("Upload PDF Book", type=["pdf"])
             
             if uploaded_file is not None:
-                with st.spinner("Processing PDF..."):
-                    # Save uploaded file
-                    save_dir = Path("data/uploads")
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                    file_path = save_dir / uploaded_file.name
+                # Check if this file has already been processed
+                file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+                
+                if file_id not in st.session_state.processed_files:
+                    # Create progress bars
+                    process_progress = st.progress(0)
                     
-                    with open(file_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                    
-                    # Process PDF
-                    self._process_uploaded_pdf(file_path, uploaded_file.name)
+                    with st.spinner("Processing PDF..."):
+                        st.write("Processing PDF content...")
+                        
+                        # Save uploaded file - 10% progress
+                        process_progress.progress(10)
+                        save_dir = Path("data/uploads")
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                        file_path = save_dir / uploaded_file.name
+                        
+                        with open(file_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                        
+                        # Update progress to 25%
+                        process_progress.progress(25)
+                        
+                        # Process PDF - split this into visible steps
+                        try:
+                            # Extract book title from filename - 40% progress
+                            book_title = uploaded_file.name.replace(".pdf", "")
+                            process_progress.progress(40)
+                            
+                            # Create book in database - 55% progress
+                            book = st.session_state.db_manager.create_book(book_title, str(file_path))
+                            process_progress.progress(55)
+                            
+                            # Extract text from PDF - 70% progress
+                            extractor = PDFExtractor(str(file_path))
+                            extractor.extract_text()
+                            process_progress.progress(70)
+                            
+                            # Detect chapters - 85% progress
+                            chapters = extractor.detect_chapters()
+                            process_progress.progress(85)
+                            
+                            # Save chapters to database - 100% progress
+                            for chapter_name, chapter_text in chapters.items():
+                                chapter_num = 1
+                                if "Chapter" in chapter_name:
+                                    try:
+                                        chapter_num = int(chapter_name.replace("Chapter", "").strip())
+                                    except ValueError:
+                                        pass
+                                
+                                st.session_state.db_manager.create_chapter(
+                                    book.id,
+                                    chapter_num,
+                                    chapter_name,
+                                    chapter_text
+                                )
+                            
+                            process_progress.progress(100)
+                            st.success(f"Successfully processed '{book_title}' with {len(chapters)} chapters")
+                            
+                            # Mark file as processed and store the book ID
+                            st.session_state.processed_files[file_id] = book.id
+                            
+                            # Set as current book
+                            st.session_state.current_book = book.id
+                            st.rerun()
+                        except Exception as e:
+                            process_progress.progress(100)
+                            logger.error(f"Error processing PDF: {str(e)}")
+                            st.error(f"Error processing PDF: {str(e)}")
+                else:
+                    # File already processed, just navigate to the book
+                    book_id = st.session_state.processed_files[file_id]
+                    if st.session_state.current_book != book_id:
+                        st.session_state.current_book = book_id
+                        st.rerun()
             
             st.divider()
             
@@ -167,54 +233,6 @@ class EduSummarizeApp:
                 if st.button("📖 Chapter List"):
                     st.session_state.current_chapter = None
                     st.rerun()
-    
-    def _process_uploaded_pdf(self, file_path: Path, file_name: str):
-        """
-        Process an uploaded PDF file.
-        
-        Args:
-            file_path: Path to the saved PDF file.
-            file_name: Name of the uploaded file.
-        """
-        try:
-            # Extract book title from filename
-            book_title = file_name.replace(".pdf", "")
-            
-            # Create book in database
-            book = st.session_state.db_manager.create_book(book_title, str(file_path))
-            
-            # Extract text from PDF
-            extractor = PDFExtractor(str(file_path))
-            extractor.extract_text()
-            chapters = extractor.detect_chapters()
-            
-            # Save chapters to database
-            for chapter_name, chapter_text in chapters.items():
-                # Extract chapter number
-                chapter_num = 1
-                if "Chapter" in chapter_name:
-                    try:
-                        chapter_num = int(chapter_name.replace("Chapter", "").strip())
-                    except ValueError:
-                        pass
-                
-                # Create chapter in database
-                st.session_state.db_manager.create_chapter(
-                    book.id,
-                    chapter_num,
-                    chapter_name,
-                    chapter_text
-                )
-            
-            st.sidebar.success(f"Successfully processed '{book_title}' with {len(chapters)} chapters")
-            
-            # Set as current book
-            st.session_state.current_book = book.id
-            st.rerun()
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF: {str(e)}")
-            st.sidebar.error(f"Error processing PDF: {str(e)}")
     
     def _render_book_list(self):
         """Render the book list page."""
@@ -325,13 +343,13 @@ class EduSummarizeApp:
             # Display concepts
             for concept in learning_session["concepts"]:
                 with st.expander(f"📌 {concept['name']}", expanded=not concept["is_understood"]):
-                    st.markdown(f"**Explanation**: {concept['explanation']}")
+                    st.markdown(f"*Explanation*: {concept['explanation']}")
                     
                     if concept["example"]:
-                        st.markdown(f"**Example**: {concept['example']}")
+                        st.markdown(f"*Example*: {concept['example']}")
                     
                     if concept["analogy"]:
-                        st.markdown(f"**Analogy**: {concept['analogy']}")
+                        st.markdown(f"*Analogy*: {concept['analogy']}")
                     
                     # Understanding buttons
                     col1, col2 = st.columns(2)
