@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class EduSummarizeApp:
     """Main application class for EduSummarizeAI."""
     
-    def _init_(self):
+    def __init__(self):
         """Initialize the application."""
         # Set page config
         st.set_page_config(
